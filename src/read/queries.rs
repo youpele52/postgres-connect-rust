@@ -1,17 +1,17 @@
 use super::db;
 use tokio_postgres::Error;
 
-pub trait DatabaseQueries {
-    async fn new(&self, query: String) -> Result<Vec<tokio_postgres::row::Row>, Error>;
+pub trait DatabaseQueriesRead {
+    async fn execute(&self, query: String) -> Result<Vec<tokio_postgres::row::Row>, Error>;
     async fn list_columns(&self, table_name: &str) -> Result<(), Error>;
     async fn list_tables(&self) -> Result<(), Error>;
     async fn table_row_count(&self, table_name: &str) -> Result<(), Error>;
 }
 
-pub struct PostgresQueries;
+pub struct PostgresQueriesRead;
 
-impl DatabaseQueries for PostgresQueries {
-    async fn new(&self, query: String) -> Result<Vec<tokio_postgres::row::Row>, Error> {
+impl DatabaseQueriesRead for PostgresQueriesRead {
+    async fn execute(&self, query: String) -> Result<Vec<tokio_postgres::row::Row>, Error> {
         // Get database client
         let client = db::main().await?;
 
@@ -40,7 +40,7 @@ impl DatabaseQueries for PostgresQueries {
         table_name
     )
         .to_string();
-        let rows = self.new(query).await?;
+        let rows = self.execute(query).await?;
 
         // Collect all rows into a vector
         let mut columns: Vec<(String, String)> = Vec::new();
@@ -74,7 +74,7 @@ impl DatabaseQueries for PostgresQueries {
         let query =
             "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';"
                 .to_string();
-        let rows = self.new(query).await?;
+        let rows = self.execute(query).await?;
 
         // Collect all rows into a vector
         let mut tables: Vec<String> = Vec::new();
@@ -101,7 +101,7 @@ impl DatabaseQueries for PostgresQueries {
     ///
     async fn table_row_count(&self, table_name: &str) -> Result<(), Error> {
         let query = format!("SELECT COUNT(*) FROM {} ", table_name).to_string();
-        let rows = self.new(query).await?;
+        let rows = self.execute(query).await?;
 
         // Get the count from the first row, first column
         let count: i64 = rows[0].get(0);
