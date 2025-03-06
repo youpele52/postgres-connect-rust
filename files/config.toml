@@ -1,0 +1,7 @@
+[config]
+host = "localhost"
+port = 5432
+user = "postgres"
+password = "postgres123"
+db_name = "postgres_db"
+
