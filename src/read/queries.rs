@@ -6,6 +6,7 @@ pub trait DatabaseQueriesRead {
     async fn list_columns(&self, table_name: &str) -> Result<(), Error>;
     async fn list_tables(&self) -> Result<(), Error>;
     async fn table_row_count(&self, table_name: &str) -> Result<(), Error>;
+    async fn check_postgis_support(&self) -> Result<bool, Error>;
 }
 
 pub struct PostgresQueriesRead;
@@ -116,5 +117,24 @@ impl DatabaseQueriesRead for PostgresQueriesRead {
         println!("└{:─<30}┘", "");
 
         Ok(())
+    }
+    async fn check_postgis_support(&self) -> Result<bool, Error> {
+        let query = "SELECT EXISTS (
+            SELECT 1 
+            FROM pg_extension 
+            WHERE extname = 'postgis'
+        )"
+        .to_string();
+
+        let rows = self.execute(query).await?;
+        let postgis_exists: bool = rows[0].get(0);
+
+        if postgis_exists {
+            println!("PostGIS is supported in the current database");
+        } else {
+            println!("PostGIS is NOT supported in the current database");
+        }
+
+        Ok(postgis_exists)
     }
 }
