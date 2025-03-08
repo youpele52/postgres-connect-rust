@@ -1,11 +1,14 @@
+use super::super::read::db;
 use super::super::read::queries::DatabaseQueriesRead;
 use super::super::read::Read;
+use crate::write::utils::GeoJSONFile;
 use serde_json::{Deserializer, Value};
 use std::error::Error as StdError;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
 use std::process::Command;
-use tokio_postgres::Error;
+use tokio_postgres::{Client, Error};
+
 pub trait DatabaseQueriesWrite {
     async fn execute(
         &self,
@@ -13,14 +16,16 @@ pub trait DatabaseQueriesWrite {
         success_message: Option<&str>,
         error_message: Option<&str>,
     );
-    async fn drop(&self, table_name: &str);
+    async fn drop(&self, table_name: &str) -> Result<(), Box<dyn StdError>>;
     async fn split_geojson(
         &self,
         input_file: &str,
         output_dir: &str,
         chunk_size: usize,
     ) -> std::io::Result<()>;
-    async fn upload_geojson(
+    async fn fix_collation_version(&self, table_name: &str);
+    async fn create_geo_table(&self, client: &Client, table_name: &str) -> Result<(), Error>;
+    async fn insert_geojson(
         &self,
         geojson_path: &str,
         table_name: &str,
@@ -61,19 +66,21 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
     /// This function will attempt to drop a table
     /// in the database. If the table does not exist,
     /// the function will silently exit.
-    async fn drop(&self, table_name: &str) {
-        let query = format!("DROP TABLE IF EXISTS {}", table_name).to_string();
+    async fn drop(&self, table_name: &str) -> Result<(), Box<dyn StdError>> {
+        let query = format!("DROP TABLE IF EXISTS {} CASCADE", table_name).to_string();
+        let read_queries = super::super::read::queries::PostgresQueriesRead;
 
-        println!("Attempting to drop table: {}", table_name);
-        let result = self
-            .execute(
-                query,
-                Some(format!("✅ {} table dropped successfully", table_name).as_str()),
-                Some("❌ Failed to drop table"),
-            )
-            .await;
-        // let read_queries = read::queries::PostgresQueriesRead;
-        // read_queries.new(query).await;
+        println!("🔄 Attempting to drop table: {}", table_name);
+        match read_queries.execute(query).await {
+            Ok(_) => {
+                println!("✅ {} table dropped successfully", table_name);
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to drop table: {}", e);
+                Err(Box::new(e))
+            }
+        }
     }
 
     /// Split a large GeoJSON file into smaller chunks and write them to disk.
@@ -149,61 +156,96 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
         Ok(())
     }
 
-    async fn upload_geojson(
+    /// Resolve version mismatch error
+    ///WARNING:  database "postgres_db" has a collation version mismatch
+    ///DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.31.
+    ///HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE postgres_db REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
+    async fn fix_collation_version(&self, table_name: &str) {
+        let query = format!("ALTER DATABASE {} REFRESH COLLATION VERSION", table_name).to_string();
+        self.execute(
+            query,
+            Some("✅ Collation version fixed successfully"),
+            Some("❌ Failed to fix collation version"),
+        )
+        .await;
+    }
+
+    async fn create_geo_table(&self, client: &Client, table_name: &str) -> Result<(), Error> {
+        // Drop existing table first
+        println!("🔄 Dropping existing {} table if exists...", table_name);
+        self.drop(table_name).await;
+
+        // Create table with JSONB column and index
+        client
+            .batch_execute(&format!(
+                "CREATE TABLE {} (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name VARCHAR(512) NOT NULL UNIQUE,
+                data JSONB NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX {}_data_idx ON {} USING GIN (data);",
+                table_name, table_name, table_name
+            ))
+            .await
+    }
+
+    async fn insert_geojson(
         &self,
         geojson_path: &str,
         table_name: &str,
     ) -> Result<(), Box<dyn StdError>> {
-        let db_url = Read::config_data().db_url;
+        let mut client = db::new().await?;
+        println!("🔄 Processing geojson file '{}'...", geojson_path);
 
-        if !std::path::Path::new(geojson_path).exists() {
-            eprintln!("❌ GeoJSON file not found: {}", geojson_path);
-            return Err("GeoJSON file not found".into());
-        } else {
-            println!("✅ GeoJSON file found");
-        }
-        // Ensure ogr2ogr is installed
-        let check_ogr = Command::new("ogr2ogr").arg("--version").output();
-        if check_ogr.is_err() {
-            eprintln!("❌ (ogr2ogr) GDAL is not installed");
-            return Err("GDAL is not installed. Please install GDAL first.".into());
-        } else {
-            println!("✅ GDAL is installed");
-        }
+        // Process GeoJSON file
+        let GeoJSONFile {
+            file_name,
+            json_data,
+        } = GeoJSONFile::process_geojson_file(geojson_path).await?;
 
-        // Construct the ogr2ogr command
-        let output = Command::new("ogr2ogr")
-            .arg("-f")
-            .arg("PostgreSQL")
-            .arg(format!("PG:{}", db_url))
-            .arg(geojson_path)
-            .arg("-nln")
-            .arg(table_name)
-            .arg("-append")
-            .arg("-progress")
-            .arg("-lco")
-            .arg("GEOMETRY_NAME=geom")
-            .arg("-lco")
-            .arg("FID=id")
-            .arg("-lco")
-            .arg("SPATIAL_INDEX=FALSE")
-            .output()?;
+        // Create table first
+        self.create_geo_table(&client, table_name)
+            .await
+            .expect(format!("❌ Failed to create table: {}\n", table_name).as_str());
 
-        // Check for errors
-        if !output.status.success() {
-            eprintln!("❌ ogr2ogr command failed");
-            eprintln!(
-                "Command stderr:\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return Err(format!(
-                "ogr2ogr failed: {}",
-                String::from_utf8_lossy(&output.stderr)
+        println!("🔄 Inserting geojson file '{}' into table '{}'...", geojson_path, table_name);
+        // Start transaction
+        let transaction = client
+            .transaction()
+            .await
+            .expect("❌ Failed to start transaction");
+
+        // In insert_geojson function
+        match transaction
+            .execute(
+                &format!("INSERT INTO {} (name, data) VALUES ($1, $2)", table_name),
+                &[&file_name, &json_data],
             )
-            .into());
+            .await
+        {
+            Ok(_) => println!(
+                "✅ Successfully inserted  geojson from {} into '{}' table",
+                geojson_path, table_name
+            ),
+            Err(e) => {
+                eprintln!("❌ Failed to insert GeoJSON: {}", e);
+                return Err(Box::new(e));
+            }
         }
 
-        println!("✅ Successfully imported GeoJSON into {}", table_name);
-        Ok(())
+        // Commit transaction
+        match transaction.commit().await {
+            Ok(_) => {
+                println!("✅ Transaction committed successfully\n");
+                let read_queries = super::super::read::queries::PostgresQueriesRead;
+                read_queries.list_columns(table_name).await;
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to commit transaction: {}", e);
+                Err(Box::new(e))
+            }
+        }
     }
 }

@@ -14,8 +14,7 @@ pub struct PostgresQueriesRead;
 impl DatabaseQueriesRead for PostgresQueriesRead {
     async fn execute(&self, query: String) -> Result<Vec<tokio_postgres::row::Row>, Error> {
         // Get database client
-        let client = db::main().await?;
-
+        let client = db::new().await?;
         // Execute the query without parameters
         let rows = client
             .query(&query, &[])
@@ -52,7 +51,10 @@ impl DatabaseQueriesRead for PostgresQueriesRead {
         }
 
         // Print table header
-        println!("\n┌{:─<30}┬{:─<20}┐", "", "");
+
+        println!("\n┌{:─<30}{:─<21}┐", "", "");
+        println!("│ {:<28}{:<21} │", format!("Columns in '{}' table", table_name), "");
+        println!("├{:─<30}┬{:─<20}┤", "", "");
         println!("│ {:<28} │ {:<18} │", "column_name", "data_type");
         println!("├{:─<30}┼{:─<20}┤", "", "");
 

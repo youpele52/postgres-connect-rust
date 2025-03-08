@@ -1,7 +1,7 @@
 use crate::read;
 use tokio_postgres::{Error, NoTls};
 
-pub async fn main() -> Result<tokio_postgres::Client, Error> {
+pub async fn new() -> Result<tokio_postgres::Client, Error> {
     let config = read::Read::config_data().config;
     // Create connection string
     let connection_string: String = format!(
