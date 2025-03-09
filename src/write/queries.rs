@@ -1,7 +1,7 @@
 use super::super::read::db;
 use super::super::read::queries::DatabaseQueriesRead;
 use super::super::read::Read;
-use crate::write::utils::GeoJSONFile;
+use crate::write::utils::{convert_path, get_all_file_paths, GeoJSONFile};
 use serde_json::{Deserializer, Value};
 use std::error::Error as StdError;
 use std::fs::File;
@@ -25,6 +25,12 @@ pub trait DatabaseQueriesWrite {
     ) -> std::io::Result<()>;
     async fn fix_collation_version(&self, table_name: &str);
     async fn create_geo_table(&self, client: &Client, table_name: &str) -> Result<(), Error>;
+    async fn insert_one_geojson(
+        &self,
+        client: &Client,
+        geojson_path: &str,
+        table_name: &str,
+    ) -> Result<(), Box<dyn StdError>>;
     async fn insert_geojson(
         &self,
         geojson_path: &str,
@@ -171,10 +177,6 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
     }
 
     async fn create_geo_table(&self, client: &Client, table_name: &str) -> Result<(), Error> {
-        // Drop existing table first
-        println!("🔄 Dropping existing {} table if exists...", table_name);
-        self.drop(table_name).await;
-
         // Create table with JSONB column and index
         client
             .batch_execute(&format!(
@@ -195,6 +197,39 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
         geojson_path: &str,
         table_name: &str,
     ) -> Result<(), Box<dyn StdError>> {
+        // Connect to database
+        let mut client = db::new().await?;
+        println!("🔄 Processing geojson file '{}'...", geojson_path);
+        // Create table first
+        self.create_geo_table(&client, table_name)
+            .await
+            .expect(format!("❌ Failed to create table: {}\n", table_name).as_str());
+        let converted_path = convert_path(geojson_path).unwrap();
+        if converted_path.is_dir() {
+            println!("🔄 Processing directory {}...", geojson_path);
+            let paths = get_all_file_paths(converted_path).await?;
+            for path in paths {
+                self.insert_one_geojson(&client, path.as_str(), table_name)
+                    .await?;
+            }
+            let read_queries = super::super::read::queries::PostgresQueriesRead;
+            read_queries.table_row_count(table_name).await;
+            Ok(())
+        } else {
+            self.insert_one_geojson(&client, geojson_path, table_name)
+                .await
+        }
+    }
+
+    async fn insert_one_geojson(
+        &self,
+        client: &Client,
+        geojson_path: &str,
+        table_name: &str,
+    ) -> Result<(), Box<dyn StdError>> {
+        let converted_path = convert_path(geojson_path).unwrap();
+
+        // Connect to database
         let mut client = db::new().await?;
         println!("🔄 Processing geojson file '{}'...", geojson_path);
 
@@ -204,19 +239,17 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
             json_data,
         } = GeoJSONFile::process_geojson_file(geojson_path).await?;
 
-        // Create table first
-        self.create_geo_table(&client, table_name)
-            .await
-            .expect(format!("❌ Failed to create table: {}\n", table_name).as_str());
-
-        println!("🔄 Inserting geojson file '{}' into table '{}'...", geojson_path, table_name);
+        println!(
+            "🔄 Inserting geojson file '{}' into table '{}'...",
+            geojson_path, table_name
+        );
         // Start transaction
         let transaction = client
             .transaction()
             .await
             .expect("❌ Failed to start transaction");
 
-        // In insert_geojson function
+        // In insert_one_geojson function
         match transaction
             .execute(
                 &format!("INSERT INTO {} (name, data) VALUES ($1, $2)", table_name),
@@ -238,8 +271,6 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
         match transaction.commit().await {
             Ok(_) => {
                 println!("✅ Transaction committed successfully\n");
-                let read_queries = super::super::read::queries::PostgresQueriesRead;
-                read_queries.list_columns(table_name).await;
                 Ok(())
             }
             Err(e) => {
