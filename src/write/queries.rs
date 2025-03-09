@@ -192,35 +192,99 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
             .await
     }
 
+    /// Insert GeoJSON file into the database
+    ///
+    /// This function will read a GeoJSON file and insert it into the database.
+    /// The function will create the table if it does not exist.
+    /// The function will also create an index on the JSONB column for efficient querying.
+    ///
+    ///  *Parameters*
+    ///
+    /// * `geojson_path`: The path to the GeoJSON file to be inserted.
+    /// * `table_name`: The name of the table to insert the data into.
+    ///
+    /// *Errors*
+    ///
+    /// This function will return an error if the GeoJSON file does not exist,
+    /// if the database connection fails, or if the insert query fails.
     async fn insert_geojson(
         &self,
         geojson_path: &str,
         table_name: &str,
     ) -> Result<(), Box<dyn StdError>> {
-        // Connect to database
-        let mut client = db::new().await?;
-        println!("🔄 Processing geojson file '{}'...", geojson_path);
-        // Create table first
-        self.create_geo_table(&client, table_name)
-            .await
-            .expect(format!("❌ Failed to create table: {}\n", table_name).as_str());
-        let converted_path = convert_path(geojson_path).unwrap();
-        if converted_path.is_dir() {
-            println!("🔄 Processing directory {}...", geojson_path);
-            let paths = get_all_file_paths(converted_path).await?;
-            for path in paths {
-                self.insert_one_geojson(&client, path.as_str(), table_name)
-                    .await?;
-            }
-            let read_queries = super::super::read::queries::PostgresQueriesRead;
-            read_queries.table_row_count(table_name).await;
-            Ok(())
-        } else {
-            self.insert_one_geojson(&client, geojson_path, table_name)
-                .await
-        }
-    }
+        // Create connection pool for efficient database connections
+        let pool = db::new_pool().await?;
 
+        // Convert input path to Path object and verify it exists
+        let converted_path = convert_path(geojson_path).unwrap();
+
+        // Process files in parallel
+        let paths = if converted_path.is_dir() {
+            // If path is a directory, get all file paths recursively
+            println!("🔄 Processing directory {}...", geojson_path);
+            get_all_file_paths(converted_path).await?
+        } else {
+            // If path is a file, create single-element vector
+            println!("🔄 Processing file {}...", geojson_path);
+            vec![geojson_path.to_string()]
+        };
+
+        // Get database connection from pool
+        let client = pool.get().await?;
+
+        // Create table if it doesn't exist
+        self.create_geo_table(&client, table_name).await?;
+
+        // Process files concurrently using tokio::spawn
+        let futures = paths.into_iter().map(|path| {
+            // Clone pool and table_name for each task
+            let pool = pool.clone();
+            let table_name = table_name.to_string();
+
+            // Spawn async task for each file
+            tokio::spawn(async move {
+                // Get database connection from pool
+                let mut client = pool.get().await.expect("❌ Failed to get client");
+
+                // Process GeoJSON file
+                let geo_file = GeoJSONFile::process_geojson_file(&path)
+                    .await
+                    .expect("❌ Failed to process geojson file");
+
+                // Start database transaction
+                let transaction = client
+                    .transaction()
+                    .await
+                    .expect("❌ Failed to start transaction");
+
+                // Execute insert query
+                transaction
+                    .execute(
+                        &format!("INSERT INTO {} (name, data) VALUES ($1, $2)", table_name),
+                        &[&geo_file.file_name, &geo_file.json_data],
+                    )
+                    .await?;
+
+                // Commit transaction
+                transaction.commit().await
+            })
+        });
+
+        // Wait for all tasks to complete
+        let results: Vec<_> = futures::future::join_all(futures).await;
+
+        // Handle any errors from tasks
+        for result in results {
+            result??;
+        }
+
+        // Check row count after insertion
+        let read_queries = super::super::read::queries::PostgresQueriesRead;
+        read_queries.table_row_count(table_name).await;
+
+        // Return success
+        Ok(())
+    }
     async fn insert_one_geojson(
         &self,
         client: &Client,

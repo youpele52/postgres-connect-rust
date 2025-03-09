@@ -1,5 +1,6 @@
 use crate::read;
-use tokio_postgres::{Error, NoTls};
+use deadpool_postgres::{Manager, Pool, PoolError};
+use tokio_postgres::{Config, Error, NoTls};
 
 pub async fn new() -> Result<tokio_postgres::Client, Error> {
     let config = read::Read::config_data().config;
@@ -23,4 +24,20 @@ pub async fn new() -> Result<tokio_postgres::Client, Error> {
     });
 
     return Ok(client);
+}
+
+pub async fn new_pool() -> Result<Pool, Box<dyn std::error::Error>> {
+    let config = read::Read::config_data().config;
+    let mut cfg = Config::new();
+    cfg.host(&config.host);
+    cfg.user(&config.user);
+    cfg.password(&config.password);
+    cfg.dbname(&config.db_name);
+
+    let manager = Manager::new(cfg, NoTls);
+    let pool = Pool::builder(manager)
+        .max_size(16) // Adjust based on your needs
+        .build()?;
+
+    Ok(pool)
 }

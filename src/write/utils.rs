@@ -66,4 +66,3 @@ pub async fn get_all_file_paths(dir_path: &Path) -> Result<Vec<String>, Box<dyn 
 
     Ok(paths)
 }
-
