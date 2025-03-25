@@ -16,7 +16,11 @@ pub trait DatabaseQueriesWrite {
         success_message: Option<&str>,
         error_message: Option<&str>,
     );
+
     async fn drop(&self, table_name: &str) -> Result<(), Box<dyn StdError>>;
+
+    async fn drop_all_tables(&self) -> Result<(), Box<dyn std::error::Error>>;
+
     async fn split_geojson(
         &self,
         input_file: &str,
@@ -87,6 +91,38 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
                 Err(Box::new(e))
             }
         }
+    }
+
+    async fn drop_all_tables(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let read_queries = super::super::read::queries::PostgresQueriesRead;
+        // let query = "DROP SCHEMA public CASCADE; CREATE SCHEMA public;";
+
+        let tables = read_queries.list_tables(Some(true)).await?;
+        println!("Found {} tables to drop", tables.len());
+        println!("🔄 Attempting to drop all tables");
+
+        let drop_futures: Vec<_> = tables
+            .into_iter()
+            .map(|table_name| {
+                // let read_queries = read_queries.clone(); // Clone for each closure
+                let read_queries = super::super::read::queries::PostgresQueriesRead;
+
+                let drop_query = format!("DROP TABLE {} CASCADE", table_name);
+
+                println!("🔄 Scheduling drop for table: {}", table_name);
+                async move {
+                    match read_queries.execute(drop_query).await {
+                        Ok(_) => println!("✅ Dropped table: {:?}", &table_name),
+                        Err(e) => println!("❌ Failed to drop table {:?}: {}", &table_name, e),
+                    }
+                }
+            })
+            .collect();
+
+        futures::future::join_all(drop_futures).await;
+        println!("✅ All tables dropped successfully");
+
+        Ok(())
     }
 
     /// Split a large GeoJSON file into smaller chunks and write them to disk.
