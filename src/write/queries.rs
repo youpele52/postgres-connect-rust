@@ -98,6 +98,12 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
         // let query = "DROP SCHEMA public CASCADE; CREATE SCHEMA public;";
 
         let tables = read_queries.list_tables(Some(true)).await?;
+
+        if tables.is_empty() || tables.len() == 0 {
+            println!("🤗 No tables to drop");
+            return Ok(());
+        }
+
         println!("Found {} tables to drop", tables.len());
         println!("🔄 Attempting to drop all tables");
 
