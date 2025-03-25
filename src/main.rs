@@ -16,13 +16,16 @@ async fn main() {
     // let _ = write_queries.insert_geojson("/Users/youpele/DevWorld/FZJ/renewableenergydashboard/frontend/src/data/geojson/potential_S2_Expansive_IA800_OA600.geojson",  "geo_data").await;
     // let _ = write_queries.insert_geojson("/Users/youpele/DevWorld/FZJ/renewableenergydashboard/frontend/src/data/geojson",  "geo_data").await;
     // write_queries.fix_collation_version("postgres_db").await;
-    let _ = write_queries.drop_all_tables().await;
+    // let _ = write_queries.drop_all_tables().await;
+    // let _ = write_queries
+    //     .backup_database("/Users/youpele/DevWorld/FZJ/db_backups/h2atlas")
+    //     .await;
 
     ////// READ ///////
+    let _ = read_queries.list_tables(Some(false)).await;
     // let _ = read_queries.check_postgis_support().await;
     // let _ = read_queries.list_columns("geo_data").await;
     // let _ = read_queries.table_row_count("geo_data").await;
-    // let _ = read_queries.list_tables(Some(false)).await;
 
     // let _ = read_queries.list_columns("geo_data").await;
     // match read::queries::main("geo_data").await {

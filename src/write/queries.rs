@@ -2,6 +2,7 @@ use super::super::read::db;
 use super::super::read::queries::DatabaseQueriesRead;
 use super::super::read::Read;
 use crate::write::utils::{convert_path, get_all_file_paths, GeoJSONFile};
+use chrono::Local;
 use serde_json::{Deserializer, Value};
 use std::error::Error as StdError;
 use std::fs::File;
@@ -40,6 +41,7 @@ pub trait DatabaseQueriesWrite {
         geojson_path: &str,
         table_name: &str,
     ) -> Result<(), Box<dyn StdError>>;
+    async fn backup_database(&self, output_dir: &str) -> Result<(), Box<dyn std::error::Error>>;
 }
 
 pub struct PostgresQueriesWrite;
@@ -381,6 +383,62 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
             }
             Err(e) => {
                 eprintln!("❌ Failed to commit transaction: {}", e);
+                Err(Box::new(e))
+            }
+        }
+    }
+
+    async fn backup_database(&self, output_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+
+        let db_config = Read::config_data().config;
+
+        let output_file = format!(
+            "{}/backup_{}_{}.dump",
+            output_dir, db_config.db_name, timestamp
+        );
+        println!("🔄 Attempting to backup {} database", &db_config.db_name);
+        println!("🕒 Backup timestamp: {}", timestamp);
+
+        // Set password in environment variable
+        std::env::set_var("PGPASSWORD", &db_config.password);
+
+        let command = format!(
+            "pg_dump --host={} --port={} --username={} --dbname={} --format=custom --no-privileges --no-owner \
+            --exclude-table='geometry_columns' --exclude-table='spatial_ref_sys' \
+            --exclude-table='raster_columns' --exclude-table='raster_overviews' \
+            --file={}",
+            db_config.host, db_config.port, db_config.user, db_config.db_name, output_file
+        );
+
+        println!("💻 Executing command: {}", command);
+        println!("⏳ Running pg_dump...");
+
+        match tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .status()
+            .await
+        {
+            Ok(status) if status.success() => {
+                println!(
+                    "✅ Database '{}' backed up to {}",
+                    db_config.db_name, output_file
+                );
+                Ok(())
+            }
+            Ok(_) => {
+                eprintln!("❌ Failed to backup database '{}'", db_config.db_name);
+                Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Database backup failed",
+                )))
+            }
+            Err(e) => {
+                eprintln!(
+                    "❌ Error backing up database '{}': {}",
+                    db_config.db_name, e
+                );
                 Err(Box::new(e))
             }
         }
