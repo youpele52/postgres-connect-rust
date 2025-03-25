@@ -8,6 +8,8 @@ use std::error::Error as StdError;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
 use std::process::Command;
+use std::time::Instant;
+use sys_info;
 use tokio_postgres::{Client, Error};
 
 pub trait DatabaseQueriesWrite {
@@ -41,7 +43,17 @@ pub trait DatabaseQueriesWrite {
         geojson_path: &str,
         table_name: &str,
     ) -> Result<(), Box<dyn StdError>>;
-    async fn backup_database(&self, output_dir: &str) -> Result<(), Box<dyn std::error::Error>>;
+    async fn backup_database(
+        &self,
+        output_dir: &str,
+        no_of_jobs: Option<i32>,
+    ) -> Result<(), Box<dyn std::error::Error>>;
+    async fn restore_database(
+        &self,
+        dump_file: &str,
+        docker_container_name: Option<&str>,
+        no_of_jobs: Option<i32>,
+    ) -> Result<(), Box<dyn std::error::Error>>;
 }
 
 pub struct PostgresQueriesWrite;
@@ -388,10 +400,15 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
         }
     }
 
-    async fn backup_database(&self, output_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
+    async fn backup_database(
+        &self,
+        output_dir: &str,
+        no_of_jobs: Option<i32>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
 
         let db_config = Read::config_data().config;
+        let no_of_jobs = no_of_jobs.unwrap_or(4);
 
         let output_file = format!(
             "{}/backup_{}_{}.dump",
@@ -404,11 +421,23 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
         std::env::set_var("PGPASSWORD", &db_config.password);
 
         let command = format!(
-            "pg_dump --host={} --port={} --username={} --dbname={} --format=custom --no-privileges --no-owner \
-            --exclude-table='geometry_columns' --exclude-table='spatial_ref_sys' \
-            --exclude-table='raster_columns' --exclude-table='raster_overviews' \
+            "pg_dump \
+            --host={} --port={} --username={} --dbname={} \
+            --jobs={} \
+            --format=custom \
+            --no-privileges \
+            --no-owner \
+            --exclude-table='geometry_columns' \
+            --exclude-table='spatial_ref_sys' \
+            --exclude-table='raster_columns' \
+            --exclude-table='raster_overviews' \
             --file={}",
-            db_config.host, db_config.port, db_config.user, db_config.db_name, output_file
+            db_config.host,
+            db_config.port,
+            db_config.user,
+            db_config.db_name,
+            no_of_jobs,
+            output_file
         );
 
         println!("💻 Executing command: {}", command);
@@ -438,6 +467,178 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
                 eprintln!(
                     "❌ Error backing up database '{}': {}",
                     db_config.db_name, e
+                );
+                Err(Box::new(e))
+            }
+        }
+    }
+
+    async fn restore_database(
+        &self,
+        dump_file: &str,
+        docker_container_name: Option<&str>,
+        no_of_jobs: Option<i32>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let start_time = Instant::now();
+        let db_config = Read::config_data().config;
+        let no_of_jobs = no_of_jobs.unwrap_or(4);
+
+        println!(
+            "🔄 Attempting to restore database unto {}",
+            &db_config.db_name
+        );
+
+        let _ = self.drop_all_tables().await?;
+
+        // Detect system memory and set appropriate values
+        let total_memory = sys_info::mem_info()
+            .map(|info| info.total)
+            .unwrap_or(16 * 1024 * 1024); // Default to 16GB if detection fails
+
+        let work_mem = if total_memory >= 64 * 1024 * 1024 {
+            // 64GB
+            "512MB"
+        } else if total_memory >= 32 * 1024 * 1024 {
+            // 32GB
+            "256MB"
+        } else {
+            // 16GB or less
+            "128MB"
+        };
+
+        let maintenance_work_mem = if total_memory >= 64 * 1024 * 1024 {
+            // 64GB
+            "1GB"
+        } else if total_memory >= 32 * 1024 * 1024 {
+            // 32GB
+            "512MB"
+        } else {
+            // 16GB or less
+            "256MB"
+        };
+
+        // Set password in environment variable
+        std::env::set_var("PGPASSWORD", &db_config.password);
+        std::env::set_var("PGWORKMEM", work_mem);
+        std::env::set_var("PGMAINTENANCE_WORK_MEM", maintenance_work_mem);
+
+        println!("💾 Detected memory: {}KB", total_memory);
+        println!("⚙️  Using WORK_MEM: {}", work_mem);
+        println!("⚙️  Using MAINTENANCE_WORK_MEM: {}", maintenance_work_mem);
+        println!("⚙️  Total number of jobs: {}", &no_of_jobs);
+        // Step 1: Restore schema only
+        println!("📊 Step 1: Restoring schema...");
+
+        let mut schema_command: String = String::new();
+
+        if let Some(container) = docker_container_name {
+            println!("⚙️ Docker container specified: {}", container);
+            schema_command = format!(
+                "docker exec -i {} pg_restore \
+                    --host={} --port={} --username={} --dbname={} \
+                    --jobs={} \
+                    --schema-only \
+                    --clean \
+                    --if-exists \
+                    --no-acl \
+                    --no-comments \
+                    {}",
+                container,
+                db_config.host,
+                db_config.port,
+                db_config.user,
+                db_config.db_name,
+                no_of_jobs,
+                dump_file
+            );
+        } else {
+            println!("⚙️ No Docker container specified");
+            schema_command = format!(
+                "pg_restore \
+                    --host={} --port={} --username={} --dbname={} \
+                    --jobs={} \
+                    --schema-only \
+                    --clean \
+                    --if-exists \
+                    --no-acl \
+                    --no-comments \
+                    {}",
+                db_config.host,
+                db_config.port,
+                db_config.user,
+                db_config.db_name,
+                no_of_jobs,
+                dump_file
+            );
+        }
+
+        match tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&schema_command)
+            .status()
+            .await
+        {
+            Ok(status) if status.success() => {
+                println!("✅ Schema restored successfully");
+            }
+            _ => {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "❌ Schema restore failed",
+                )));
+            }
+        }
+
+        // Step 2: Restore data only
+        println!("\n\n📊 Phase 2: Restoring data...");
+        let data_command = format!(
+            "pg_restore \
+                --host={} --port={} --username={} --dbname={} \
+                --jobs={} \
+                --data-only \
+                --disable-triggers \
+                --no-acl \
+                --no-comments \
+                {}",
+            db_config.host,
+            db_config.port,
+            db_config.user,
+            db_config.db_name,
+            no_of_jobs,
+            dump_file
+        );
+
+        println!("⏳ Running pg_restore...");
+        match tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&data_command)
+            .status()
+            .await
+        {
+            Ok(status) if status.success() => {
+                let duration = start_time.elapsed();
+                println!(
+                    "✅ Database '{}' restored from {} in {:.2?}",
+                    db_config.db_name, dump_file, duration
+                );
+                Ok(())
+            }
+            Ok(_) => {
+                let duration = start_time.elapsed();
+                eprintln!(
+                    "❌ Failed to restore database '{}' after {:.2?}",
+                    db_config.db_name, duration
+                );
+                Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Database restore failed",
+                )))
+            }
+            Err(e) => {
+                let duration = start_time.elapsed();
+                eprintln!(
+                    "❌ Error restoring database '{}' after {:.2?}: {}",
+                    db_config.db_name, duration, e
                 );
                 Err(Box::new(e))
             }

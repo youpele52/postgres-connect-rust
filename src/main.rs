@@ -20,9 +20,12 @@ async fn main() {
     // let _ = write_queries
     //     .backup_database("/Users/youpele/DevWorld/FZJ/db_backups/h2atlas")
     //     .await;
+    let _ = write_queries
+        .restore_database("/Users/youpele/DevWorld/FZJ/db_backups/h2atlas/backup_h2atlas_2025-03-25_14-57-49.dump", None, Some(16))
+        .await;
 
     ////// READ ///////
-    let _ = read_queries.list_tables(Some(false)).await;
+    // let _ = read_queries.list_tables(Some(false)).await;
     // let _ = read_queries.check_postgis_support().await;
     // let _ = read_queries.list_columns("geo_data").await;
     // let _ = read_queries.table_row_count("geo_data").await;
