@@ -21,7 +21,7 @@ async fn main() {
     //     .backup_database("/Users/youpele/DevWorld/FZJ/db_backups/h2atlas")
     //     .await;
     let _ = write_queries
-        .restore_database("/Users/youpele/DevWorld/FZJ/db_backups/h2atlas/backup_h2atlas_2025-03-25_14-57-49.dump", None, Some(16))
+        .restore_database("/Users/youpele/DevWorld/FZJ/db_backups/h2atlas/backup_h2atlas_2025-03-25_14-57-49.dump", Some("ecowas_gui_db"), Some(16))
         .await;
 
     ////// READ ///////
