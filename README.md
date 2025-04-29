@@ -51,15 +51,19 @@ cargo build --release
 ### Example: Upload a GeoJSON file
 
 ```rust
-use postgres_connect_rust::write::queries::PostgresQueriesWrite;
+use postgres_connect_rust::write::queries::{process_and_upload_file, parse_geojson_features, upload_features_copy};
 
 #[tokio::main]
 async fn main() {
-    let write_queries = PostgresQueriesWrite;
-    write_queries
-        .upload_geojson("path/to/your.geojson", None)
-        .await
-        .expect("Failed to upload GeoJSON");
+    let file_path = "path/to/your.geojson";
+    let table_name = None;
+    
+    // Process and upload the file
+    process_and_upload_file(file_path, table_name).await.expect("Failed to process and upload file");
+    
+    // Alternatively, you can use the functions individually
+    let features = parse_geojson_features(file_path).await.expect("Failed to parse GeoJSON features");
+    upload_features_copy(features, table_name).await.expect("Failed to upload features");
 }
 ```
 
@@ -75,8 +79,9 @@ cargo run --release -- upload path/to/your.geojson [table_name]
 
 ## 📚 API Overview
 
-- `upload_geojson(geojson_path: &str, table_name: Option<&str>)`: Uploads a GeoJSON file to the database, creating the table if necessary.
-- `process_file(client, input_file, table_name)`: Internal function to stream features into the database.
+- `process_and_upload_file(geojson_path: &str, table_name: Option<&str>)`: Uploads a GeoJSON file to the database, creating the table if necessary.
+- `parse_geojson_features(geojson_path: &str)`: Parses the features from a GeoJSON file.
+- `upload_features_copy(features: Vec<Feature>, table_name: Option<&str>)`: Uploads the features to the database using the `COPY` command.
 - Table and column listing, row counting, and PostGIS support checks available in the `read` module.
 
 ---
