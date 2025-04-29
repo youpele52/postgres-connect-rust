@@ -38,6 +38,7 @@ impl DatabaseQueriesRead for PostgresQueriesRead {
     /// This function queries the database for all columns
     /// in a table and prints them to the console.
     async fn list_columns(&self, table_name: &str) -> Result<(), Error> {
+        eprintln!("⏳ Attempting to list columns in table: {}", table_name);
         let query = format!(
         "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '{}';",
         table_name
@@ -72,7 +73,7 @@ impl DatabaseQueriesRead for PostgresQueriesRead {
 
         // Print table footer
         println!("└{:─<30}┴{:─<20}┘", "", "");
-
+        eprintln!("✅ Successfully listed columns in table: {}", table_name);
         Ok(())
     }
 
@@ -86,6 +87,7 @@ impl DatabaseQueriesRead for PostgresQueriesRead {
     /// Panics
     /// If the database query fails, this function will panic.
     async fn list_tables(&self, only_user_tables: Option<bool>) -> Result<Vec<String>, Error> {
+        eprintln!("⏳ Attempting to list tables in database");
         let only_user_tables = only_user_tables.unwrap_or(true); // Default to true
         let query = if only_user_tables {
             "
@@ -124,13 +126,14 @@ impl DatabaseQueriesRead for PostgresQueriesRead {
         }
         // Print table footer
         println!("└{:─<30}┘", "");
-
+        eprintln!("✅ Successfully listed tables");
         Ok(tables)
     }
 
     /// Get the row count for a given table
     ///
     async fn table_row_count(&self, table_name: &str) -> Result<(), Error> {
+        eprintln!("⏳ Attempting to get row count for table: {}", table_name);
         let query = format!("SELECT COUNT(*) FROM {} ", table_name).to_string();
         let rows = self
             .execute(query)
@@ -148,7 +151,7 @@ impl DatabaseQueriesRead for PostgresQueriesRead {
         println!("│ {:<28} │", count);
         // Print table footer
         println!("└{:─<30}┘", "");
-
+        eprintln!("✅ Successfully got row count for table: {}", table_name);
         Ok(())
     }
     async fn check_postgis_support(&self) -> Result<bool, Error> {

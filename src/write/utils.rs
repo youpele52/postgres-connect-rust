@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::fs::File as TokioFile;
 
+use std::fmt::Display;
 use tokio::io::AsyncRead;
 use tokio_postgres::{Client, CopyInSink}; // Make sure this is imported
 
@@ -81,16 +82,6 @@ pub async fn get_all_file_paths(dir_path: &Path) -> Result<Vec<String>, Box<dyn 
     Ok(paths)
 }
 
-// /// Stream a GeoJSON file for reading
-// pub async fn open_geojson_file(
-//     path: &Path,
-// ) -> Result<Box<dyn AsyncRead + Unpin + Send>, Box<dyn StdError>> {
-//     let file = File::open(path).await?;
-//     let reader = BufReader::new(file);
-
-//     Ok(Box::new(reader))
-// }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureWithMeta {
     pub dataset_name: String,
@@ -98,9 +89,19 @@ pub struct FeatureWithMeta {
     pub geometry_wkt: String,
 }
 
-/// GeoJSON parser
+/// Converts a GeoJSON geometry to its WKT representation.
 ///
-/// Converts GeoJSON geometry to WKT
+/// This function takes a `Geometry` object from the `geojson` crate and converts it into a
+/// Well-Known Text (WKT) representation. The conversion covers various geometry types such as
+/// Point, MultiPoint, LineString, and others.
+///
+/// # Parameters
+///
+/// * `geom`: A reference to a `Geometry` object to be converted.
+///
+/// # Returns
+///
+/// A `Result` containing either the WKT representation as a `String` or an error if the conversion fails.
 pub fn geometry_to_wkt(geom: &Geometry) -> Result<String> {
     match geom.value.clone() {
         geojson::Value::Point(c) => Ok(format!("POINT({} {})", c[0], c[1])),
@@ -172,12 +173,37 @@ pub fn geometry_to_wkt(geom: &Geometry) -> Result<String> {
     }
 }
 
+/// Processes a GeoJSON file and uploads it to the database.
+///
+/// This function takes a database client, an input file path, and a table name. It opens the input
+/// file, reads the GeoJSON data, and uploads it to the specified table using a COPY operation.
+///
+/// # Parameters
+///
+/// * `client`: A reference to a `Client` object from the `tokio_postgres` crate.
+/// * `input_file`: The path to the GeoJSON file to process.
+/// * `table_name`: The name of the table to upload the GeoJSON data to.
+///
+/// # Returns
+///
+/// A `Result` indicating success or an error.
+///
+/// # Errors
+///
+/// * `Box<dyn StdError>`: If an error occurs during the processing or upload process.
+///
+/// # Examples
+///
+/// ```
+/// let client = Client::connect("host=localhost user=postgres password=postgres", "").await?;
+/// let result = process_file(&client, "path/to/geojson.json", "my_table").await;
+/// ```
 pub async fn process_file(
     client: &Client,
     input_file: &str,
     table_name: &str,
 ) -> Result<(), Box<dyn StdError>> {
-    println!(
+    eprintln!(
         "🔄 Attempting to process file: {}, table: {}",
         input_file, table_name
     );
@@ -217,7 +243,7 @@ pub async fn process_file(
         escape_csv_field(geometry)
     );
 
-    println!("🔄 Processing feature");
+    eprintln!("🔄 Processing features in {}", input_file);
     for (idx, feature) in features.into_iter().enumerate() {
         let name = match feature.id {
             Some(geojson::feature::Id::String(ref s)) => s.clone(),
@@ -241,14 +267,13 @@ pub async fn process_file(
         sink.send(bytes).await.expect("❌ Failed to send bytes");
     }
 
-    // Convert to Bytes
-    // let bytes = BytesMut::from(csv_line.as_str());
-    // sink.send(bytes).await?;
+    eprintln!("⏳ Closing copy operation...");
     sink.close().await.expect("❌ Failed to close sink");
+    eprintln!("✅ Copy operation completed successfully!!");
     Ok(())
 }
 
-// Helper function to escape CSV fields
+/// Helper function to escape CSV fields
 fn escape_csv_field(field: &str) -> String {
     if field.contains(',') || field.contains('"') || field.contains('\n') {
         // Escape quotes by doubling them and wrap in quotes
@@ -256,5 +281,32 @@ fn escape_csv_field(field: &str) -> String {
         format!("\"{}\"", escaped)
     } else {
         field.to_string()
+    }
+}
+/// Returns the contained value of an `Option` if it exists, otherwise returns a default value.
+///
+/// This function takes an `Option` and a default value. If the `Option` contains a value,
+/// that value is returned. Otherwise, the default value is returned. If the default
+/// value is used, a warning message will be printed indicating the default is being used.
+///
+/// # Parameters
+///
+/// * `value`: The `Option` to unwrap.
+/// * `default`: The default value to return if `value` is `None`.
+/// * `value_name`: The name of the value being unwrapped, used in the warning message.
+///
+/// # Returns
+///
+/// The contained value if `Some`, otherwise `default`.
+pub fn custom_unwrap_or<T: Display>(value: Option<T>, default: T, value_name: &str) -> T {
+    match value {
+        Some(v) => v,
+        None => {
+            eprintln!(
+                "⚠️ No {} was given, using default value: {}",
+                value_name, default
+            );
+            default
+        }
     }
 }

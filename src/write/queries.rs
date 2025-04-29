@@ -1,7 +1,9 @@
 use super::super::read::db;
 use super::super::read::queries::DatabaseQueriesRead;
 use super::super::read::Read;
-use crate::write::utils::{convert_path, get_all_file_paths, process_file, GeoJSONFile};
+use crate::write::utils::{
+    convert_path, custom_unwrap_or, get_all_file_paths, process_file, GeoJSONFile,
+};
 use chrono::Local;
 use serde_json::{Deserializer, Value};
 use std::error::Error as StdError;
@@ -35,7 +37,7 @@ pub trait DatabaseQueriesWrite {
     async fn upload_geojson(
         &self,
         geojson_path: &str,
-        table_name: &str,
+        table_name: Option<&str>,
     ) -> Result<(), Box<dyn StdError>>;
     async fn insert_one_geojson(
         &self,
@@ -238,19 +240,7 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
     }
 
     async fn create_geo_table(&self, client: &Client, table_name: &str) -> Result<(), Error> {
-        // Create table with JSONB column and index
-        // client
-        //     .batch_execute(&format!(
-        //         "CREATE TABLE {} (
-        //         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        //         name VARCHAR(512) NOT NULL UNIQUE,
-        //         data JSONB NOT NULL,
-        //         created_at TIMESTAMPTZ DEFAULT NOW()
-        //     );
-        //     CREATE INDEX {}_data_idx ON {} USING GIN (data);",
-        //         table_name, table_name, table_name
-        //     ))
-        //     .await
+        println!("⏳ Attempting to create table: {}", table_name);
         client
             .batch_execute("CREATE EXTENSION IF NOT EXISTS postgis;")
             .await?;
@@ -268,6 +258,7 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
                 table_name, table_name, table_name
             ))
             .await?;
+        println!("✅ Table {} created successfully", table_name);
         Ok(())
     }
 
@@ -668,27 +659,55 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
         }
     }
 
+    /// Uploads a GeoJSON file to the database.
+    ///
+    /// This function takes a GeoJSON file path and an optional table name. If no table name is
+    /// provided, it will be extracted from the file name. The function creates a table if it doesn't
+    /// exist and then uploads the GeoJSON data to the table using a COPY operation.
+    ///
+    /// # Parameters
+    ///
+    /// * `geojson_path`: The path to the GeoJSON file to upload.
+    /// * `table_name`: An optional table name to use for the upload. If not provided, the table name
+    ///   will be extracted from the file name.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or an error.
+    ///
+    /// # Errors
+    ///
+    /// * `Box<dyn StdError>`: If an error occurs during the upload process.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let queries = PostgresQueriesWrite;
+    /// let result = queries.upload_geojson("path/to/geojson.json", None);
+    /// ```
     async fn upload_geojson(
         &self,
         geojson_path: &str,
-        table_name: &str,
+        table_name: Option<&str>,
     ) -> Result<(), Box<dyn StdError>> {
-        // println!("🔄 Attempting to upload geojson file '{}'...", geojson_path);
         let (client, pool) = db::new(Some(true))
             .await
             .expect("❌ Failed to get database client or pool");
 
-        let file_name = std::path::Path::new(geojson_path)
-            .file_stem() // Option<&OsStr>
-            .and_then(|s| s.to_str()) // Option<&str>
-            .unwrap_or("unknown");
-        println!("🔄 FILENAME: {}", file_name);
+        let table_name = custom_unwrap_or(
+            table_name,
+            std::path::Path::new(geojson_path)
+                .file_stem() // Option<&OsStr>
+                .and_then(|s| s.to_str()) // Option<&str>
+                .unwrap_or("unknown"),
+            "table_name",
+        );
         // Create table if it doesn't exist
-        if let Err(e) = self.create_geo_table(&client, file_name).await {
+        if let Err(e) = self.create_geo_table(&client, table_name).await {
             // Optionally, check for specific error code if not using IF NOT EXISTS
             eprintln!(
                 "Warning: Could not create '{}' table (may already exist):\n{}",
-                file_name, e
+                table_name, e
             );
             // You can proceed, unless the error is critical
         }
