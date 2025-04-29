@@ -132,7 +132,10 @@ impl DatabaseQueriesRead for PostgresQueriesRead {
     ///
     async fn table_row_count(&self, table_name: &str) -> Result<(), Error> {
         let query = format!("SELECT COUNT(*) FROM {} ", table_name).to_string();
-        let rows = self.execute(query).await?;
+        let rows = self
+            .execute(query)
+            .await
+            .expect(format!("Failed to read table row count in table {} ", table_name).as_str());
 
         // Get the count from the first row, first column
         let count: i64 = rows[0].get(0);

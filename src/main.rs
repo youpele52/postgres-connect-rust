@@ -25,9 +25,10 @@ async fn main() {
     //     .await;
 
     let _ = write_queries.upload_geojson("/Users/youpele/DevWorld/FZJ/data/elyas-gui/nuts3_2024_regions_eez_w_eez.geojson", table).await;
+    // let _ = write_queries.drop(table).await;
     ////// READ ///////
-    // let _ = read_queries.list_tables(Some(false)).await;
+    let _ = read_queries.list_tables(Some(false)).await;
     // let _ = read_queries.check_postgis_support().await;
     // let _ = read_queries.list_columns(table).await;
-    let _ = read_queries.table_row_count(table).await;
+    // let _ = read_queries.table_row_count(table).await;
 }

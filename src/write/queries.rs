@@ -679,7 +679,14 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
             .expect("❌ Failed to get database client or pool");
 
         // Create table if it doesn't exist
-        // self.create_geo_table(&client, table_name).await?;
+        if let Err(e) = self.create_geo_table(&client, table_name).await {
+            // Optionally, check for specific error code if not using IF NOT EXISTS
+            eprintln!(
+                "Warning: Could not create '{}' table (may already exist):\n{}",
+                table_name, e
+            );
+            // You can proceed, unless the error is critical
+        }
         process_file(&client, geojson_path, table_name).await?;
 
         Ok(())
