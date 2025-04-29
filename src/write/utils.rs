@@ -198,28 +198,28 @@ pub fn geometry_to_wkt(geom: &Geometry) -> Result<String> {
 /// let client = Client::connect("host=localhost user=postgres password=postgres", "").await?;
 /// let result = process_file(&client, "path/to/geojson.json", "my_table").await;
 /// ```
-pub async fn process_file(
-    client: &Client,
+/// Parses a GeoJSON file and returns its features.
+pub fn parse_geojson_features(
     input_file: &str,
-    table_name: &str,
-) -> Result<(), Box<dyn StdError>> {
-    eprintln!(
-        "🔄 Attempting to process file: {}, table: {}",
-        input_file, table_name
-    );
-
+) -> Result<Vec<geojson::Feature>, Box<dyn StdError>> {
     let file = File::open(input_file)
-        .expect(format!("❌ Failed to open input file: {}", input_file).as_str());
+        .map_err(|e| format!("❌ Failed to open input file: {}: {}", input_file, e))?;
     let reader = BufReader::new(file);
-    let geojson: GeoJson = serde_json::from_reader(reader).expect("❌ Failed to parse GeoJSON");
+    let geojson: GeoJson = serde_json::from_reader(reader)
+        .map_err(|e| format!("❌ Failed to parse GeoJSON: {}", e))?;
+    match geojson {
+        GeoJson::FeatureCollection(fc) => Ok(fc.features),
+        _ => Err("GeoJSON file does not contain a FeatureCollection".into()),
+    }
+}
 
-    let features = match geojson {
-        GeoJson::FeatureCollection(fc) => fc.features,
-        _ => return Err("GeoJSON file does not contain a FeatureCollection".into()),
-    };
-
-    let mut file_count = 0;
-    // Set up COPY operation
+/// Uploads features to the database using the COPY command.
+pub async fn upload_features_copy(
+    client: &Client,
+    table_name: &str,
+    features: Vec<geojson::Feature>,
+    input_file: &str,
+) -> Result<(), Box<dyn StdError>> {
     let stmt = format!(
         "COPY {} (name, properties, geometry) FROM STDIN (FORMAT csv)",
         table_name
@@ -230,19 +230,6 @@ pub async fn process_file(
             .await
             .expect("❌ Failed to start COPY operation"),
     );
-    // For each row, build a CSV line and send it as a Vec<u8>:
-    let name = "some_name";
-    let properties = "{\"foo\": \"bar\"}";
-    let geometry = "SRID=4326;POINT(1 2)";
-
-    // ...
-    let csv_line = format!(
-        "{},{},{}\n",
-        escape_csv_field(name),
-        escape_csv_field(properties),
-        escape_csv_field(geometry)
-    );
-
     eprintln!("🔄 Processing features in {}", input_file);
     for (idx, feature) in features.into_iter().enumerate() {
         let name = match feature.id {
@@ -256,7 +243,6 @@ pub async fn process_file(
             Some(ref geom) => geometry_to_wkt(geom).expect("❌ Failed to convert geometry to WKT"),
             None => "NULL".to_string(),
         };
-
         let csv_line = format!(
             "{},{},{}\n",
             escape_csv_field(&name),
@@ -266,11 +252,24 @@ pub async fn process_file(
         let bytes = BytesMut::from(csv_line.as_str());
         sink.send(bytes).await.expect("❌ Failed to send bytes");
     }
-
     eprintln!("⏳ Closing copy operation...");
     sink.close().await.expect("❌ Failed to close sink");
     eprintln!("✅ Copy operation completed successfully!!");
     Ok(())
+}
+
+/// Orchestrates parsing and uploading a GeoJSON file.
+pub async fn process_and_upload_file(
+    client: &Client,
+    input_file: &str,
+    table_name: &str,
+) -> Result<(), Box<dyn StdError>> {
+    eprintln!(
+        "🔄 Attempting to process file: {}, table: {}",
+        input_file, table_name
+    );
+    let features = parse_geojson_features(input_file)?;
+    upload_features_copy(client, table_name, features, input_file).await
 }
 
 /// Helper function to escape CSV fields

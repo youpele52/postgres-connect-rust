@@ -2,7 +2,7 @@ use super::super::read::db;
 use super::super::read::queries::DatabaseQueriesRead;
 use super::super::read::Read;
 use crate::write::utils::{
-    convert_path, custom_unwrap_or, get_all_file_paths, process_file, GeoJSONFile,
+    convert_path, custom_unwrap_or, get_all_file_paths, process_and_upload_file, GeoJSONFile,
 };
 use chrono::Local;
 use serde_json::{Deserializer, Value};
@@ -711,7 +711,7 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
             );
             // You can proceed, unless the error is critical
         }
-        process_file(&client, geojson_path, table_name).await?;
+        process_and_upload_file(&client, geojson_path, table_name).await?;
 
         Ok(())
     }
