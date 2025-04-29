@@ -678,12 +678,17 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
             .await
             .expect("❌ Failed to get database client or pool");
 
+        let file_name = std::path::Path::new(geojson_path)
+            .file_stem() // Option<&OsStr>
+            .and_then(|s| s.to_str()) // Option<&str>
+            .unwrap_or("unknown");
+        println!("🔄 FILENAME: {}", file_name);
         // Create table if it doesn't exist
-        if let Err(e) = self.create_geo_table(&client, table_name).await {
+        if let Err(e) = self.create_geo_table(&client, file_name).await {
             // Optionally, check for specific error code if not using IF NOT EXISTS
             eprintln!(
                 "Warning: Could not create '{}' table (may already exist):\n{}",
-                table_name, e
+                file_name, e
             );
             // You can proceed, unless the error is critical
         }

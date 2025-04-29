@@ -181,6 +181,7 @@ pub async fn process_file(
         "🔄 Attempting to process file: {}, table: {}",
         input_file, table_name
     );
+
     let file = File::open(input_file)
         .expect(format!("❌ Failed to open input file: {}", input_file).as_str());
     let reader = BufReader::new(file);
@@ -191,17 +192,6 @@ pub async fn process_file(
         _ => return Err("GeoJSON file does not contain a FeatureCollection".into()),
     };
 
-    // let stream = Deserializer::from_reader(reader).into_iter::<geojson::Feature>();
-
-    let file_name = input_file
-        .split('/')
-        .last()
-        .unwrap()
-        .split('.')
-        .next()
-        .unwrap();
-
-    // let mut features: Vec<Value> = Vec::new();
     let mut file_count = 0;
     // Set up COPY operation
     let stmt = format!(
@@ -226,9 +216,6 @@ pub async fn process_file(
         escape_csv_field(properties),
         escape_csv_field(geometry)
     );
-
-    // Process each feature
-    let dataset_name = "some_name";
 
     println!("🔄 Processing feature");
     for (idx, feature) in features.into_iter().enumerate() {
