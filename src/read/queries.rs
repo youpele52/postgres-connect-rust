@@ -15,7 +15,9 @@ pub struct PostgresQueriesRead;
 impl DatabaseQueriesRead for PostgresQueriesRead {
     async fn execute(&self, query: String) -> Result<Vec<tokio_postgres::row::Row>, Error> {
         // Get database client
-        let client = db::new().await?;
+        let (client, _) = db::new(None)
+            .await
+            .expect("❌ Failed to get database client");
         // Execute the query without parameters
         let rows = client
             .query(&query, &[])

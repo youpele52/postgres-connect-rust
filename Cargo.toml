@@ -11,12 +11,20 @@ unused = { level = "allow", priority = -1 } # for exploratory dev
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.5"
 tokio = { version = "1", features = ["full"] }
-tokio-postgres = { version = "0.7", features = [
+tokio-postgres = { version = "0.7.13", features = [
     "with-uuid-1",
     "with-serde_json-1",
+    "with-geo-types-0_7",
 ] }
 serde_json = "1.0.140"
 futures = "0.3"
 deadpool-postgres = "0.14.1"
 chrono = "0.4"
 sys-info = "0.9"
+geojson = "0.23"
+tokio-stream = "0.1"
+flate2 = "1.1.1"
+async-compression = { version = "0.4.23", features = ["tokio", "gzip"] }
+indicatif = "0.17.11"
+anyhow = "1.0.98"
+bytes = "1.10.1"

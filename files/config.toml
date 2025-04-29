@@ -1,10 +1,10 @@
 [config]
 host = "localhost"
 user = "postgres"
-# port = 5432
-# password = "postgres123"
-# db_name = "postgres_db"
-db_name = "h2atlas"  # for h2atlas
-password = "password"  # for h2atlas
-port = 25432  # for h2atlas
+port = 5432
+password = "postgres123"
+db_name = "postgres_db"
+# db_name = "h2atlas"  # for h2atlas
+# password = "password"  # for h2atlas
+# port = 25432  # for h2atlas
 

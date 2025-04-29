@@ -1,7 +1,7 @@
 use super::super::read::db;
 use super::super::read::queries::DatabaseQueriesRead;
 use super::super::read::Read;
-use crate::write::utils::{convert_path, get_all_file_paths, GeoJSONFile};
+use crate::write::utils::{convert_path, get_all_file_paths, process_file, GeoJSONFile};
 use chrono::Local;
 use serde_json::{Deserializer, Value};
 use std::error::Error as StdError;
@@ -32,6 +32,11 @@ pub trait DatabaseQueriesWrite {
     ) -> std::io::Result<()>;
     async fn fix_collation_version(&self, table_name: &str);
     async fn create_geo_table(&self, client: &Client, table_name: &str) -> Result<(), Error>;
+    async fn upload_geojson(
+        &self,
+        geojson_path: &str,
+        table_name: &str,
+    ) -> Result<(), Box<dyn StdError>>;
     async fn insert_one_geojson(
         &self,
         client: &Client,
@@ -234,18 +239,36 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
 
     async fn create_geo_table(&self, client: &Client, table_name: &str) -> Result<(), Error> {
         // Create table with JSONB column and index
+        // client
+        //     .batch_execute(&format!(
+        //         "CREATE TABLE {} (
+        //         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        //         name VARCHAR(512) NOT NULL UNIQUE,
+        //         data JSONB NOT NULL,
+        //         created_at TIMESTAMPTZ DEFAULT NOW()
+        //     );
+        //     CREATE INDEX {}_data_idx ON {} USING GIN (data);",
+        //         table_name, table_name, table_name
+        //     ))
+        //     .await
+        client
+            .batch_execute("CREATE EXTENSION IF NOT EXISTS postgis;")
+            .await?;
+
         client
             .batch_execute(&format!(
-                "CREATE TABLE {} (
+                "CREATE TABLE IF NOT EXISTS {} (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 name VARCHAR(512) NOT NULL UNIQUE,
-                data JSONB NOT NULL,
+                properties JSONB NOT NULL,
+                geometry GEOMETRY,
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
-            CREATE INDEX {}_data_idx ON {} USING GIN (data);",
+            CREATE INDEX {}_properties_idx ON {} USING GIN (properties);",
                 table_name, table_name, table_name
             ))
-            .await
+            .await?;
+        Ok(())
     }
 
     /// Insert GeoJSON file into the database
@@ -350,7 +373,7 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
         let converted_path = convert_path(geojson_path).unwrap();
 
         // Connect to database
-        let mut client = db::new().await?;
+        let (mut client, _) = db::new(None).await?;
         println!("🔄 Processing geojson file '{}'...", geojson_path);
 
         // Process GeoJSON file
@@ -643,5 +666,22 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
                 Err(Box::new(e))
             }
         }
+    }
+
+    async fn upload_geojson(
+        &self,
+        geojson_path: &str,
+        table_name: &str,
+    ) -> Result<(), Box<dyn StdError>> {
+        // println!("🔄 Attempting to upload geojson file '{}'...", geojson_path);
+        let (client, pool) = db::new(Some(true))
+            .await
+            .expect("❌ Failed to get database client or pool");
+
+        // Create table if it doesn't exist
+        // self.create_geo_table(&client, table_name).await?;
+        process_file(&client, geojson_path, table_name).await?;
+
+        Ok(())
     }
 }
