@@ -26,35 +26,22 @@ pub trait DatabaseQueriesWrite {
 
     async fn drop_all_tables(&self) -> Result<(), Box<dyn std::error::Error>>;
 
-    async fn split_geojson(
-        &self,
-        input_file: &str,
-        output_dir: &str,
-        chunk_size: usize,
-    ) -> std::io::Result<()>;
     async fn fix_collation_version(&self, table_name: &str);
+
     async fn create_geo_table(&self, client: &Client, table_name: &str) -> Result<(), Error>;
-    async fn upload_geojson(
+
+    async fn insert_geojson(
         &self,
         geojson_path: &str,
         table_name: Option<&str>,
     ) -> Result<(), Box<dyn StdError>>;
-    async fn insert_one_geojson(
-        &self,
-        client: &Client,
-        geojson_path: &str,
-        table_name: &str,
-    ) -> Result<(), Box<dyn StdError>>;
-    async fn insert_geojson(
-        &self,
-        geojson_path: &str,
-        table_name: &str,
-    ) -> Result<(), Box<dyn StdError>>;
+
     async fn backup_database(
         &self,
         output_dir: &str,
         no_of_jobs: Option<i32>,
     ) -> Result<(), Box<dyn std::error::Error>>;
+
     async fn restore_database(
         &self,
         dump_file: &str,
@@ -152,79 +139,6 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
         Ok(())
     }
 
-    /// Split a large GeoJSON file into smaller chunks and write them to disk.
-    ///
-    /// This function will read a large GeoJSON file, split it into smaller chunks,
-    /// and write them to disk. The output files will be named after the input
-    /// file followed by a number, e.g. `input.geojson` becomes `input_0.geojson`,
-    /// `input_1.geojson`, etc.
-    ///
-    /// # Parameters
-    ///
-    /// * `input_file`: The path to the input GeoJSON file to be split.
-    /// * `output_dir`: The directory where the output files should be written.
-    /// * `chunk_size`: The number of features to write to each output file. If
-    ///   set to 0, the entire file will be written to a single output file.
-    ///
-    async fn split_geojson(
-        &self,
-        input_file: &str,
-        output_dir: &str,
-        chunk_size: usize,
-    ) -> std::io::Result<()> {
-        let file = File::open(input_file)
-            .expect(format!("❌ Failed to open input file: {}", input_file).as_str());
-        let reader = BufReader::new(file);
-        let stream = Deserializer::from_reader(reader).into_iter::<Value>();
-        let file_name = input_file
-            .split('/')
-            .last()
-            .unwrap()
-            .split('.')
-            .next()
-            .unwrap();
-        let mut features = Vec::new();
-        let mut file_count = 0;
-        for feature in stream {
-            if let Ok(f) = feature {
-                features.push(f);
-                if features.len() >= chunk_size {
-                    // Write to new file
-                    let output_file = format!(
-                        "{}/split_geojson_count_{}-{}.geojson",
-                        output_dir, file_count, file_name
-                    );
-                    let mut writer = BufWriter::new(File::create(&output_file)?);
-                    let feature_collection =
-                        serde_json::json!({"type": "FeatureCollection", "features": features});
-                    writeln!(writer, "{}", serde_json::to_string(&feature_collection)?)?;
-                    writer.flush()?;
-
-                    // Reset for next chunk
-                    features.clear();
-                    file_count += 1;
-                    println!("✅ Created {}", output_file);
-                }
-            }
-        }
-
-        // Write remaining features
-        if !features.is_empty() {
-            let output_file = format!(
-                "{}/split_geojson_count_{}-{}.geojson",
-                output_dir, file_count, file_name
-            );
-            let mut writer = BufWriter::new(File::create(&output_file)?);
-            let feature_collection =
-                serde_json::json!({"type": "FeatureCollection", "features": features});
-            writeln!(writer, "{}", serde_json::to_string(&feature_collection)?)?;
-            writer.flush()?;
-            println!("✅ Created {}", output_file);
-        }
-
-        Ok(())
-    }
-
     /// Resolve version mismatch error
     ///WARNING:  database "postgres_db" has a collation version mismatch
     ///DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.31.
@@ -260,158 +174,6 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
             .await?;
         println!("✅ Table {} created successfully", table_name);
         Ok(())
-    }
-
-    /// Insert GeoJSON file into the database
-    ///
-    /// This function will read a GeoJSON file and insert it into the database.
-    /// The function will create the table if it does not exist.
-    /// The function will also create an index on the JSONB column for efficient querying.
-    ///
-    ///  *Parameters*
-    ///
-    /// * `geojson_path`: The path to the GeoJSON file to be inserted.
-    /// * `table_name`: The name of the table to insert the data into.
-    ///
-    /// *Errors*
-    ///
-    /// This function will return an error if the GeoJSON file does not exist,
-    /// if the database connection fails, or if the insert query fails.
-    async fn insert_geojson(
-        &self,
-        geojson_path: &str,
-        table_name: &str,
-    ) -> Result<(), Box<dyn StdError>> {
-        // Create connection pool for efficient database connections
-        let pool = db::new_pool().await?;
-
-        // Convert input path to Path object and verify it exists
-        let converted_path = convert_path(geojson_path).unwrap();
-
-        // Process files in parallel
-        let paths = if converted_path.is_dir() {
-            // If path is a directory, get all file paths recursively
-            println!("🔄 Processing directory {}...", geojson_path);
-            get_all_file_paths(converted_path).await?
-        } else {
-            // If path is a file, create single-element vector
-            println!("🔄 Processing file {}...", geojson_path);
-            vec![geojson_path.to_string()]
-        };
-
-        // Get database connection from pool
-        let client = pool.get().await?;
-
-        // Create table if it doesn't exist
-        self.create_geo_table(&client, table_name).await?;
-
-        // Process files concurrently using tokio::spawn
-        let futures = paths.into_iter().map(|path| {
-            // Clone pool and table_name for each task
-            let pool = pool.clone();
-            let table_name = table_name.to_string();
-
-            // Spawn async task for each file
-            tokio::spawn(async move {
-                // Get database connection from pool
-                let mut client = pool.get().await.expect("❌ Failed to get client");
-
-                // Process GeoJSON file
-                let geo_file = GeoJSONFile::process_geojson_file(&path)
-                    .await
-                    .expect("❌ Failed to process geojson file");
-
-                // Start database transaction
-                let transaction = client
-                    .transaction()
-                    .await
-                    .expect("❌ Failed to start transaction");
-
-                // Execute insert query
-                transaction
-                    .execute(
-                        &format!("INSERT INTO {} (name, data) VALUES ($1, $2)", table_name),
-                        &[&geo_file.file_name, &geo_file.json_data],
-                    )
-                    .await?;
-
-                // Commit transaction
-                transaction.commit().await
-            })
-        });
-
-        // Wait for all tasks to complete
-        let results: Vec<_> = futures::future::join_all(futures).await;
-
-        // Handle any errors from tasks
-        for result in results {
-            result??;
-        }
-
-        // Check row count after insertion
-        let read_queries = super::super::read::queries::PostgresQueriesRead;
-        read_queries.table_row_count(table_name).await;
-
-        // Return success
-        Ok(())
-    }
-    async fn insert_one_geojson(
-        &self,
-        client: &Client,
-        geojson_path: &str,
-        table_name: &str,
-    ) -> Result<(), Box<dyn StdError>> {
-        let converted_path = convert_path(geojson_path).unwrap();
-
-        // Connect to database
-        let (mut client, _) = db::new(None).await?;
-        println!("🔄 Processing geojson file '{}'...", geojson_path);
-
-        // Process GeoJSON file
-        let GeoJSONFile {
-            file_name,
-            json_data,
-        } = GeoJSONFile::process_geojson_file(geojson_path).await?;
-
-        println!(
-            "🔄 Inserting geojson file '{}' into table '{}'...",
-            geojson_path, table_name
-        );
-        // Start transaction
-        let transaction = client
-            .transaction()
-            .await
-            .expect("❌ Failed to start transaction");
-
-        // In insert_one_geojson function
-        match transaction
-            .execute(
-                &format!("INSERT INTO {} (name, data) VALUES ($1, $2)", table_name),
-                &[&file_name, &json_data],
-            )
-            .await
-        {
-            Ok(_) => println!(
-                "✅ Successfully inserted  geojson from {} into '{}' table",
-                geojson_path, table_name
-            ),
-            Err(e) => {
-                eprintln!("❌ Failed to insert GeoJSON: {}", e);
-                return Err(Box::new(e));
-            }
-        }
-
-        // Commit transaction
-        match transaction.commit().await {
-            Ok(_) => {
-                println!("✅ Transaction committed successfully\n");
-                Ok(())
-            }
-            Err(e) => {
-                eprintln!("❌ Failed to commit transaction: {}", e);
-                Err(Box::new(e))
-            }
-        }
     }
 
     async fn backup_database(
@@ -683,9 +445,9 @@ impl DatabaseQueriesWrite for PostgresQueriesWrite {
     ///
     /// ```
     /// let queries = PostgresQueriesWrite;
-    /// let result = queries.upload_geojson("path/to/geojson.json", None);
+    /// let result = queries.insert_geojson("path/to/geojson.json", None);
     /// ```
-    async fn upload_geojson(
+    async fn insert_geojson(
         &self,
         geojson_path: &str,
         table_name: Option<&str>,

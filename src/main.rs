@@ -25,7 +25,7 @@ async fn main() {
     //     .await;
 
     let _ = write_queries
-        .upload_geojson(
+        .insert_geojson(
             "/Users/youpele/DevWorld/FZJ/data/elyas-gui/nuts3_2024_regions_eez_w_eez.geojson",
             None,
         )
